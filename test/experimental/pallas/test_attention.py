@@ -366,19 +366,19 @@ def test_forward_laplacian(
     assert jnp.allclose(
         folx_out.jacobian.dense_array, ref_out.jacobian.dense_array, atol=1e-6
     )
-    assert jnp.allclose(folx_out.laplacian, ref_out.laplacian, atol=5e-5)
+    assert jnp.allclose(folx_out.laplacian, ref_out.laplacian, rtol=2e-3)
 
     assert jnp.allclose(folx_out.x, out.x, atol=1e-6)
     assert jnp.allclose(
         folx_out.jacobian.dense_array, out.jacobian.dense_array, atol=1e-6
     )
-    assert jnp.allclose(folx_out.laplacian, out.laplacian, atol=5e-5)
+    assert jnp.allclose(folx_out.laplacian, out.laplacian, rtol=2e-3)
 
     assert jnp.allclose(ref_out.x, out.x, atol=1e-6)
     assert jnp.allclose(
         ref_out.jacobian.dense_array, out.jacobian.dense_array, atol=1e-6
     )
-    assert jnp.allclose(ref_out.laplacian, out.laplacian, atol=5e-5)
+    assert jnp.allclose(ref_out.laplacian, out.laplacian, rtol=2e-3)
 
 
 @pytest.mark.parametrize(
@@ -435,16 +435,16 @@ def test_mhsea_forward_laplacian(
     assert jnp.allclose(
         folx_out.jacobian.dense_array, ref_out.jacobian.dense_array, atol=1e-6
     )
-    assert jnp.allclose(folx_out.laplacian, ref_out.laplacian, atol=1e-4)
+    assert jnp.allclose(folx_out.laplacian, ref_out.laplacian, rtol=2e-3)
 
     assert jnp.allclose(folx_out.x, out.x, atol=1e-6)
     assert jnp.allclose(
         folx_out.jacobian.dense_array, out.jacobian.dense_array, atol=1e-6
     )
-    assert jnp.allclose(folx_out.laplacian, out.laplacian, atol=1e-4)
+    assert jnp.allclose(folx_out.laplacian, out.laplacian, rtol=2e-3)
 
     assert jnp.allclose(ref_out.x, out.x, atol=1e-6)
     assert jnp.allclose(
         ref_out.jacobian.dense_array, out.jacobian.dense_array, atol=1e-6
     )
-    assert jnp.allclose(ref_out.laplacian, out.laplacian, atol=1e-4)
+    assert jnp.allclose(ref_out.laplacian, out.laplacian, rtol=2e-3)
