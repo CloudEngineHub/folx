@@ -13,8 +13,11 @@ class LaplacianTestCase(unittest.TestCase):
         jax.config.update('jax_enable_x64', True)
         return super().setUp()
 
-    def assert_allclose(self, x, y, rtol=2e-5):
-        return np.testing.assert_allclose(x, y, rtol=rtol)
+    def assert_allclose(self, x, y, rtol=2e-5, atol=1e-10):
+        # atol guards near-zero comparisons where rtol alone is meaningless:
+        # cancellation can leave values at ~1e-13 with abs-diffs near float64 epsilon
+        # (~1e-16), which trivially exceed any rtol.
+        return np.testing.assert_allclose(x, y, rtol=rtol, atol=atol)
 
     @staticmethod
     def jacobian(f, x, weights=None):
