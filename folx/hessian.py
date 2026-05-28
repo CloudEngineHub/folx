@@ -145,62 +145,121 @@ def dot_product_jac_hessian_jac(
     return unravel(flat_out)
 
 
-def remove_fill(arrs: np.ndarray, find_unique: bool = False):
+def _vmap_axes_to_original(axes_for_seq: Sequence[int | None]) -> list[int | None]:
+    """Translate iteratively-reduced vmap axis indices to original-array indices.
+
+    `axes_for_seq[j]` is the axis to vmap over at the j-th vmap, in the array
+    *after* the previous (j-1) vmaps have peeled their axes off. This converts
+    each entry back to an axis index in the original (un-reduced) array.
     """
-    Remove the fill value from an array. As the tensors might not be shaped correctly
-    afterwards, we reduce all the leading dimensions by lists.
+    original_axes: list[int | None] = []
+    removed: list[int] = []
+    for ax_red in axes_for_seq:
+        if ax_red is None:
+            original_axes.append(None)
+            continue
+        ax_orig = ax_red
+        for r in sorted(removed):
+            if ax_orig >= r:
+                ax_orig += 1
+        original_axes.append(ax_orig)
+        removed.append(ax_orig)
+    return original_axes
+
+
+def _align_mask_for_broadcast(
+    mask: np.ndarray, axes_for_seq: Sequence[int | None], num_vmap_dims: int
+) -> np.ndarray:
+    """Reshape a mask to `(*vmap_dim_sizes, K_flat)` for per-position set ops.
+
+    Vmap (broadcast) axes are moved to the front in `axes_for_seq` order, with
+    a size-1 axis inserted wherever an entry is None. The remaining (kept) axes
+    are flattened into a single trailing K dim.
+    """
+    original_axes = _vmap_axes_to_original(axes_for_seq)
+    real_axes = [a for a in original_axes if a is not None]
+    other_axes = [a for a in range(mask.ndim) if a not in real_axes]
+    permuted = np.transpose(mask, real_axes + other_axes)
+    for j, orig in enumerate(original_axes):
+        if orig is None:
+            permuted = np.expand_dims(permuted, axis=j)
+    s_shape = permuted.shape[:num_vmap_dims]
+    k_flat = int(np.prod(permuted.shape[num_vmap_dims:], dtype=int))
+    return permuted.reshape((*s_shape, k_flat))
+
+
+def _per_position_sorted_unique(arr: np.ndarray) -> np.ndarray:
+    """Sorted unique non-negative values along the last axis, padded with -1.
 
     Args:
-        - arrs: array to remove fill value from
+        arr: shape `(*S, K)`, entries are indices (`>= 0`) or `-1` (fill).
     Returns:
-        - arrs: nested lists of arrays without fill value
+        Array of shape `(*S, M)` where `M` is the maximum per-position count of
+        unique non-negative values, sorted ascending, padded with `-1`.
     """
-    if arrs.size == 0:
-        return arrs
-    if arrs[0].ndim >= 1:
-        return [remove_fill(x, find_unique=find_unique) for x in arrs]
-    if find_unique:
-        arrs = np.unique(arrs)
-    return arrs[arrs >= 0]  # type: ignore
+    leading = arr.shape[:-1]
+    if arr.shape[-1] == 0:
+        return np.full((*leading, 0), -1, dtype=arr.dtype)
+    sorted_arr = np.sort(arr, axis=-1)
+    prev = np.concatenate(
+        [np.full((*leading, 1), -2, dtype=arr.dtype), sorted_arr[..., :-1]],
+        axis=-1,
+    )
+    is_first = (sorted_arr != prev) & (sorted_arr >= 0)
+    sentinel = np.iinfo(arr.dtype).max
+    masked = np.where(is_first, sorted_arr, sentinel)
+    final = np.sort(masked, axis=-1)
+    counts = is_first.sum(axis=-1)
+    max_count = int(counts.max()) if counts.size > 0 else 0
+    result = final[..., :max_count]
+    return np.where(result == sentinel, -1, result)
 
 
-def merge_and_populate(
-    arrs: Sequence[np.ndarray],
-    operation: Callable[[np.ndarray, np.ndarray], np.ndarray],
-):
-    """
-    The arrays are assumed to be of the same shape. We look at the intersection of all arrays.
-    We then find the maximum intersection size and fill all arrays to that size.
+def _per_position_intersection(masks: Sequence[np.ndarray]) -> np.ndarray:
+    """Sorted intersection of input sets along the last axis, padded with -1.
 
-    Args:
-        - arrs: list of arrays
-    Returns:
-        - arrs: np.ndarray where only intersections are kept and all arrays are filled to the same size.
+    Each input contributes one set per position; the intersection is the values
+    present in every input's set. After deduplicating each input first, a value
+    is in the intersection iff it occupies a length-N run in the sorted union.
     """
-    result = jtu.tree_map(
-        lambda *x: functools.reduce(operation, tuple(x[1:]), x[0]),
-        *arrs,
-        is_leaf=lambda x: isinstance(x, np.ndarray),
-    )
-    sizes = jtu.tree_map(
-        lambda x: x.size, result, is_leaf=lambda x: isinstance(x, np.ndarray)
-    )
-    max_size = np.max(jtu.tree_leaves(sizes))
-    result = jtu.tree_map(
-        lambda x: np.concatenate([x, np.full(max_size - x.size, -1, dtype=x.dtype)]),
-        result,
-        is_leaf=lambda x: isinstance(x, np.ndarray),
-    )
-    return np.asarray(result, dtype=int)
+    n = len(masks)
+    per_input = [_per_position_sorted_unique(m) for m in masks]
+    combined = np.concatenate(per_input, axis=-1)
+    leading = combined.shape[:-1]
+    total = combined.shape[-1]
+    if total < n:
+        return np.full((*leading, 0), -1, dtype=combined.dtype)
+    sorted_combined = np.sort(combined, axis=-1)
+    first = sorted_combined[..., : total - n + 1]
+    last = sorted_combined[..., n - 1 :]
+    is_intersection = (first == last) & (first >= 0)
+    sentinel = np.iinfo(combined.dtype).max
+    masked = np.where(is_intersection, first, sentinel)
+    final = np.sort(masked, axis=-1)
+    counts = is_intersection.sum(axis=-1)
+    max_count = int(counts.max()) if counts.size > 0 else 0
+    result = final[..., :max_count]
+    return np.where(result == sentinel, -1, result)
 
 
 def find_out_idx(lapl_args: FwdLaplArgs, in_axes, flags: FunctionFlags, threshold: int):
+    """Determine the per-output-position input dependency set for a sparse op.
+
+    Returns `(idx, dense_out)` where `idx` has shape `(M, *broadcast_shape)` and
+    `idx[:, p]` lists the sorted unique input indices that any output at
+    position `p` depends on (union for general ops, intersection when only one
+    arg actually couples through the Hessian). `dense_out=True` signals that
+    the sparse representation isn't worth keeping at this point.
+
+    Replaces an earlier JAX vmap-of-jnp.unique pipeline with pure NumPy: the
+    masks are compile-time, so no tracing/JIT is needed and the answer is the
+    same.
+    """
     if not lapl_args.any_jacobian_weak:
         return None, True
-    # TODO: Rewrite this!! This is quity messy and inefficient.
-    # it assumes that we're only interested in the last dimension.
+
     with jax.ensure_compile_time_eval():
-        vmap_seq, (inp,) = vmap_sequences_and_squeeze(
+        vmap_seq, (squeezed_masks,) = vmap_sequences_and_squeeze(
             ([j.mask for j in lapl_args.jacobian],),
             (
                 [
@@ -211,39 +270,29 @@ def find_out_idx(lapl_args: FwdLaplArgs, in_axes, flags: FunctionFlags, threshol
                 ],
             ),
         )
-        max_size = np.max(
-            [np.sum(j.unique_idx >= 0, dtype=int) for j in lapl_args.jacobian]
+        squeezed_masks = [np.asarray(m) for m in squeezed_masks]
+
+    max_size = int(
+        np.max([np.sum(j.unique_idx >= 0, dtype=int) for j in lapl_args.jacobian])
+    )
+
+    num_vmap_dims = len(vmap_seq)
+    # vmap_seq mirrors the input pytree structure: each entry is ([axis_per_mask],).
+    aligned = [
+        _align_mask_for_broadcast(
+            m, [seq[0][i] for seq in vmap_seq], num_vmap_dims
         )
-        # This can be quite memory intensive, so we try to do it on the GPU and
-        # if that fails we just use the CPU. On the CPU this takes quite some time.
-        # TODO: work on a more memory efficient implementation!
-        unique_fn = functools.partial(jnp.unique, size=max_size + 1, fill_value=-1)
-
-        def idx_fn(x):
-            return jtu.tree_map(unique_fn, x)
-
-        for s in vmap_seq[::-1]:
-            idx_fn = jax.vmap(idx_fn, in_axes=s)
-        try:
-            # This path is more memory intensive by using the GPU to find uniques but
-            # potentially fails if the arrays are too large.
-            # +1 because we need to accomodate the -1.
-            arrs = np.asarray(idx_fn(inp), dtype=int)
-        except RuntimeError:
-            logging.info(
-                'Failed to find unique elements on GPU, falling back to CPU. This will be slow.'
-            )
-            with jax.default_device(jax.devices('cpu')[0]):
-                arrs = np.asarray(idx_fn(inp), dtype=int)
-        filtered_arrs = remove_fill(arrs, False)
+        for i, m in enumerate(squeezed_masks)
+    ]
+    s_vmap = np.broadcast_shapes(*(a.shape[:num_vmap_dims] for a in aligned))
+    broadcasted = [np.broadcast_to(a, (*s_vmap, a.shape[-1])) for a in aligned]
 
     if FunctionFlags.LINEAR_IN_ONE in flags:
-        # For off diagonal Hessians we only need to look at the intersection between
-        # all arrays rather than their union.
-        idx = merge_and_populate(filtered_arrs, np.intersect1d)  # type: ignore
+        idx = _per_position_intersection(broadcasted)
     else:
-        idx = merge_and_populate(filtered_arrs, np.union1d)  # type: ignore
-    idx = np.moveaxis(idx, -1, JAC_DIM)
+        idx = _per_position_sorted_unique(np.concatenate(broadcasted, axis=-1))
+
+    idx = np.moveaxis(idx, -1, JAC_DIM).astype(int)
 
     if idx.shape[JAC_DIM] >= max_size or idx.shape[JAC_DIM] > threshold:
         return idx, True
