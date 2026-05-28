@@ -1,5 +1,4 @@
 import functools
-import logging
 from typing import Callable, Sequence
 
 import jax
@@ -279,9 +278,7 @@ def find_out_idx(lapl_args: FwdLaplArgs, in_axes, flags: FunctionFlags, threshol
     num_vmap_dims = len(vmap_seq)
     # vmap_seq mirrors the input pytree structure: each entry is ([axis_per_mask],).
     aligned = [
-        _align_mask_for_broadcast(
-            m, [seq[0][i] for seq in vmap_seq], num_vmap_dims
-        )
+        _align_mask_for_broadcast(m, [seq[0][i] for seq in vmap_seq], num_vmap_dims)
         for i, m in enumerate(squeezed_masks)
     ]
     s_vmap = np.broadcast_shapes(*(a.shape[:num_vmap_dims] for a in aligned))

@@ -87,7 +87,9 @@ def test_two_jacs_intersect():
     m1 = np.array([[0, 1, 2], [3, 4, -1]], dtype=np.int32)
     m2 = np.array([[0, 1, 5], [6, 4, -1]], dtype=np.int32)
     args = _make_args([m1, m2])
-    out, dense = find_out_idx(args, ((), ()), FunctionFlags.LINEAR_IN_ONE, threshold=100)
+    out, dense = find_out_idx(
+        args, ((), ()), FunctionFlags.LINEAR_IN_ONE, threshold=100
+    )
     # Per column intersect:
     # col 0: {0, 3} ∩ {0, 6} = {0}
     # col 1: {1, 4} ∩ {1, 4} = {1, 4}
@@ -140,7 +142,9 @@ def test_threshold_triggers_dense():
 def test_dense_when_at_max_size():
     # Force out shape to reach max_size: each column has only one unique input,
     # but max_size counts unique indices across the whole mask (4 here).
-    m1 = np.array([[0, 0, 0, 0], [1, 1, 1, 1], [2, 2, 2, 2], [3, 3, 3, 3]], dtype=np.int32)
+    m1 = np.array(
+        [[0, 0, 0, 0], [1, 1, 1, 1], [2, 2, 2, 2], [3, 3, 3, 3]], dtype=np.int32
+    )
     args = _make_args([m1])
     out, dense = find_out_idx(args, ((),), FunctionFlags.GENERAL, threshold=100)
     assert out is not None
@@ -191,9 +195,7 @@ def test_three_jacs_union():
     m2 = np.array([[1, 3], [4, -1]], dtype=np.int32)
     m3 = np.array([[5, 1], [-1, -1]], dtype=np.int32)
     args = _make_args([m1, m2, m3])
-    out, dense = find_out_idx(
-        args, ((), (), ()), FunctionFlags.GENERAL, threshold=100
-    )
+    out, dense = find_out_idx(args, ((), (), ()), FunctionFlags.GENERAL, threshold=100)
     # col 0: {0,2} ∪ {1,4} ∪ {5} = {0,1,2,4,5}
     # col 1: {1}   ∪ {3}   ∪ {1} = {1, 3}
     expected = np.full((5, 2), -1, dtype=np.int64)
