@@ -189,6 +189,8 @@ source = { editable = "." }
 dependencies = [
     { name = "jax", version = "0.6.2", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11'" },
     { name = "jax", version = "0.10.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.11'" },
+    { name = "jaxlib", version = "0.6.2", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11'" },
+    { name = "jaxlib", version = "0.10.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.11'" },
     { name = "jaxtyping", version = "0.3.7", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11'" },
     { name = "jaxtyping", version = "0.3.10", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.11'" },
     { name = "numpy", version = "2.2.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11'" },
@@ -213,6 +215,9 @@ requires-dist = [
     { name = "jax", marker = "python_full_version < '3.13'", specifier = ">=0.4.10" },
     { name = "jax", marker = "python_full_version == '3.13.*'", specifier = ">=0.4.34" },
     { name = "jax", marker = "python_full_version >= '3.14'", specifier = ">=0.7.2" },
+    { name = "jaxlib", marker = "python_full_version < '3.13'", specifier = ">=0.4.10" },
+    { name = "jaxlib", marker = "python_full_version == '3.13.*'", specifier = ">=0.4.34" },
+    { name = "jaxlib", marker = "python_full_version >= '3.14'", specifier = ">=0.7.2" },
     { name = "jaxtyping", specifier = ">=0.2.36" },
     { name = "numpy", marker = "python_full_version < '3.13'", specifier = ">=1.25" },
     { name = "numpy", marker = "python_full_version == '3.13.*'", specifier = ">=2.1" },

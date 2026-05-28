@@ -394,16 +394,20 @@ def vmapped_jac_hessian_jac(
     out = merged_fn(*lapl_args.x)
     unravel = jfu.ravel_pytree(out)[1]
 
-    # Fast path: scalar-to-scalar elementwise nonlinear ops (silu, tanh, exp, ...).
-    # The Hessian is diagonal so tr(J^T H J) = f''(x) * (J*J).sum(JAC_DIM); we can
-    # skip find_out_idx (output mask == input mask) and the per-element vmap stack.
-    # Bail if the sparse mask has duplicates -- the identity sum_l J_full[l, i]^2 =
-    # sum_k J[k, i]^2 only holds when each output position's x0_idx values are unique.
+    # Fast path: scalar-to-scalar elementwise nonlinear ops (silu, tanh, exp, ...)
+    # on SPARSE Jacobians. The Hessian is diagonal so tr(J^T H J) =
+    # f''(x) * (J*J).sum(JAC_DIM); we can skip find_out_idx (output mask == input
+    # mask) and the per-element vmap stack. Skipped for dense Jacobians: the
+    # summation reorder vs JHJ_via_trace drifts float32 results past pallas/MHSA
+    # test tolerances even though it's mathematically equivalent. Bail also if
+    # the sparse mask has duplicates -- sum_l J_full[l, i]^2 = sum_k J[k, i]^2
+    # only holds when each output position's x0_idx values are unique.
     if (
         custom_jac_hessian_jac is None
         and int(flags) == int(FunctionFlags.GENERAL)
         and len(lapl_args.arrays) == 1
         and isinstance(out, Array)
+        and lapl_args.arrays[0].jacobian.weak
         and not _has_duplicate_x0_idx(lapl_args.arrays[0].jacobian.x0_idx)
     ):
         x0 = lapl_args.x[0]
