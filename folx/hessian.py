@@ -68,6 +68,50 @@ def JHJ_via_hvp(flat_fn: Callable, flat_x: Array, grad_2d: Array):
     return trace_of_product(HJ, grad_2d)
 
 
+def _has_duplicate_x0_idx(x0_idx) -> bool:
+    """True iff any output position has duplicate valid (>=0) entries along JAC_DIM.
+
+    Sparse Jacobians can pick up duplicate masks from FwdJacobian addition
+    (concatenation of unequal masks). Duplicates would break the fast path's
+    sum-of-squares identity, so it has to fall back when they're present.
+    Operates on numpy compile-time masks so it's free at runtime.
+    """
+    if x0_idx is None or x0_idx.shape[JAC_DIM] <= 1:
+        return False
+    sorted_idx = np.sort(x0_idx, axis=JAC_DIM)
+    a = np.take(sorted_idx, np.arange(sorted_idx.shape[JAC_DIM] - 1), axis=JAC_DIM)
+    b = np.take(sorted_idx, np.arange(1, sorted_idx.shape[JAC_DIM]), axis=JAC_DIM)
+    return bool(((a == b) & (a >= 0)).any())
+
+
+def elementwise_jhj_trace(fn: ForwardFn, args: FwdLaplArgs):
+    """Direct tr(J^T H J) for scalar-to-scalar elementwise nonlinearities.
+
+    For y = f(x) applied elementwise, the input-space Hessian H_y_x = f''(x) is
+    diagonal, so tr(J^T H J)[i] = f''(x[i]) * sum_k J[k, i]^2. Works for both
+    sparse and dense Jacobians: sum_k runs over sparse rows or dense input
+    rows respectively, and both equal |∇y[i]|^2 -- provided the sparse x0_idx
+    has no duplicates along JAC_DIM (caller checks).
+
+    Avoids find_out_idx (the output mask equals the input mask for elementwise),
+    the per-output vmap stacking in vmapped_jac_hessian_jac, and the nested
+    JVP-of-VJP inside JHJ_via_trace.
+    """
+    x = args.x[0]
+    J = args.arrays[0].jacobian.data
+    ones = jnp.ones_like(x)
+
+    def grad_fn(x):
+        _, vjp_fn = jax.vjp(fn, x)
+        # Caller guarantees fn is scalar-elementwise (out.shape == x.shape),
+        # so cotangents shaped like x are well-defined.
+        return vjp_fn(ones)[0]
+
+    _, second_grad = jax.jvp(grad_fn, (x,), (ones,))
+
+    return second_grad * (J * J).sum(axis=JAC_DIM)
+
+
 def general_jac_hessian_jac(
     fn: ForwardFn, args: FwdLaplArgs, materialize_idx: Array | None
 ):
@@ -349,6 +393,22 @@ def vmapped_jac_hessian_jac(
 
     out = merged_fn(*lapl_args.x)
     unravel = jfu.ravel_pytree(out)[1]
+
+    # Fast path: scalar-to-scalar elementwise nonlinear ops (silu, tanh, exp, ...).
+    # The Hessian is diagonal so tr(J^T H J) = f''(x) * (J*J).sum(JAC_DIM); we can
+    # skip find_out_idx (output mask == input mask) and the per-element vmap stack.
+    # Bail if the sparse mask has duplicates -- the identity sum_l J_full[l, i]^2 =
+    # sum_k J[k, i]^2 only holds when each output position's x0_idx values are unique.
+    if (
+        custom_jac_hessian_jac is None
+        and int(flags) == int(FunctionFlags.GENERAL)
+        and len(lapl_args.arrays) == 1
+        and isinstance(out, Array)
+        and not _has_duplicate_x0_idx(lapl_args.arrays[0].jacobian.x0_idx)
+    ):
+        x0 = lapl_args.x[0]
+        if out.shape == x0.shape and out.dtype == x0.dtype:
+            return elementwise_jhj_trace(merged_fn, lapl_args)
 
     out_idx, dense_out = find_out_idx(lapl_args, in_axes, flags, sparsity_threshold)
 
