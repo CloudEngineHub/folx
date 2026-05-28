@@ -29,12 +29,6 @@ dependencies = [
     "jax>=0.4.10; python_version < '3.13'",
     "jax>=0.4.34; python_version >= '3.13' and python_version < '3.14'",
     "jax>=0.7.2; python_version >= '3.14'",
-    # Pin jaxlib alongside jax. Without these, `--resolution lowest-direct`
-    # pins jax low but lets jaxlib (a transitive) float to the latest release;
-    # the ABI mismatch makes `import jax` fail before any test runs.
-    "jaxlib>=0.4.10; python_version < '3.13'",
-    "jaxlib>=0.4.34; python_version >= '3.13' and python_version < '3.14'",
-    "jaxlib>=0.7.2; python_version >= '3.14'",
     "jaxtyping>=0.2.36",
     "numpy>=1.25; python_version < '3.13'",
     "numpy>=2.1; python_version >= '3.13' and python_version < '3.14'",
@@ -61,7 +55,13 @@ build-backend = "hatchling.build"
 [dependency-groups]
 dev = [
     "flax>=0.10.2",
-    "jax[cuda13]>=0.4.10",
+    # The cuda13 extra was only added in jax 0.7.x; pinning it on jax floors
+    # that don't have it makes `--resolution lowest-direct` bump jax past its
+    # production floor and produce a jax/jaxlib ABI mismatch. Use cuda12 for
+    # older python (which still ships an old-jax floor) and cuda13 for 3.14.
+    "jax[cuda12]>=0.4.10; python_version < '3.13'",
+    "jax[cuda12]>=0.4.34; python_version >= '3.13' and python_version < '3.14'",
+    "jax[cuda13]>=0.7.2; python_version >= '3.14'",
     "parameterized>=0.9.0",
     "pre-commit-uv>=4.1.4",
     "pytest>=8.3.4",
