@@ -63,6 +63,88 @@ def rearrange(
     return x_rearranged[..., None]
 
 
+def _dot_general_one_constant(
+    lhs: ArrayOrFwdLaplArray,
+    rhs: ArrayOrFwdLaplArray,
+    dimension_numbers,
+    precision,
+    preferred_element_type,
+) -> FwdLaplArray | None:
+    """Direct dot_general fast path when exactly one operand is a FwdLaplArray.
+
+    For y = dot_general(h, W) with W constant, the op is linear in h, so we
+    can apply jax.lax.dot_general directly to (x, jacobian.data, laplacian)
+    instead of decomposing into broadcast+mul+reduce_sum through the einsum-
+    on-rearranged-inputs path. ``vmap`` over JAC_DIM lowers to one higher-dim
+    dot_general kernel (no Python loop).
+
+    Sparse Jacobian: the output's per-position dependency is the input's
+    x0_idx with the contract axes removed -- safe only when x0_idx is constant
+    along those axes (typical: a feature row depends on a fixed input subset
+    regardless of which channel/contract slot). Returns None if it isn't.
+    """
+    h_is_lhs = isinstance(lhs, FwdLaplArray)
+    h: FwdLaplArray = lhs if h_is_lhs else rhs  # type: ignore[assignment]
+    W: Array = rhs if h_is_lhs else lhs  # type: ignore[assignment]
+    (lh_contract, rh_contract), (lh_batch, rh_batch) = dimension_numbers
+    h_contract = tuple(lh_contract if h_is_lhs else rh_contract)
+    h_batch = tuple(lh_batch if h_is_lhs else rh_batch)
+    W_contract = tuple(rh_contract if h_is_lhs else lh_contract)
+    W_batch = tuple(rh_batch if h_is_lhs else lh_batch)
+
+    def op(arr_h):
+        a, b = (arr_h, W) if h_is_lhs else (W, arr_h)
+        return jax.lax.dot_general(
+            a,
+            b,
+            dimension_numbers,
+            precision=precision,
+            preferred_element_type=preferred_element_type,
+        )
+
+    if h.jacobian.weak:
+        x0_idx = h.jacobian.x0_idx
+        assert x0_idx is not None
+        # x0_idx has axis 0 = JAC_DIM, so h's contract dims shift by 1 on data.
+        data_contract = tuple(c + 1 for c in h_contract)
+        for ax in data_contract:
+            first = np.take(x0_idx, [0], axis=ax)
+            if not np.array_equal(x0_idx, np.broadcast_to(first, x0_idx.shape)):
+                return None
+        proj = x0_idx
+        for ax in sorted(data_contract, reverse=True):
+            proj = np.take(proj, 0, axis=ax)
+        # proj shape now: (k, *h's non-contract axes in h's original order).
+        h_non_contract = [i for i in range(h.x.ndim) if i not in h_contract]
+        h_brdcast = [i for i in h_non_contract if i not in h_batch]
+        # dot_general output ordering: batch_dims, then lhs_brdcast, then
+        # rhs_brdcast. Permute proj so h's surviving axes follow that order.
+        target_h_axes = list(h_batch) + h_brdcast
+        ax_in_proj = {ax: 1 + h_non_contract.index(ax) for ax in h_non_contract}
+        perm = [0] + [ax_in_proj[ax] for ax in target_h_axes]
+        proj = np.transpose(proj, perm)
+        # Insert size-1 axes for W's brdcast dims; final broadcast happens after
+        # y_x materialization so we know the exact output shape.
+        W_non_contract = [i for i in range(W.ndim) if i not in W_contract]
+        n_W_brdcast = len([i for i in W_non_contract if i not in W_batch])
+        n_batch = len(h_batch)
+        if h_is_lhs:
+            proj = proj.reshape(proj.shape + (1,) * n_W_brdcast)
+        else:
+            insert = 1 + n_batch
+            proj = proj.reshape(
+                proj.shape[:insert] + (1,) * n_W_brdcast + proj.shape[insert:]
+            )
+    else:
+        proj = None
+
+    y_x = op(h.x)
+    y_data = jax.vmap(op, in_axes=0, out_axes=0)(h.jacobian.data)
+    y_lapl = op(h.laplacian)
+    new_x0_idx = None if proj is None else np.broadcast_to(proj, y_data.shape)
+    return FwdLaplArray(y_x, FwdJacobian(y_data, new_x0_idx), y_lapl)
+
+
 def dot_general(
     args: tuple[ArrayOrFwdLaplArray, ArrayOrFwdLaplArray],
     kwargs: dict[str, Any],
@@ -77,6 +159,17 @@ def dot_general(
         return jax.lax.dot_general_p.bind(
             lhs, rhs, dimension_numbers, precision, preferred_element_type
         )  # type: ignore
+
+    # Fast path: exactly one operand has a Jacobian (the common h @ W case).
+    # f is linear in the FwdLaplArray operand so we can just dot_general through
+    # x, jacobian.data, and laplacian — skipping the rearrange + dot_last
+    # decomposition that the general path uses.
+    if isinstance(lhs, FwdLaplArray) ^ isinstance(rhs, FwdLaplArray):
+        fast = _dot_general_one_constant(
+            lhs, rhs, dimension_numbers, precision, preferred_element_type
+        )
+        if fast is not None:
+            return fast
 
     # So the idea for the dot product is to rearrange the arrays such that
     # the contract_dims are at the end. Then we just have to worry about

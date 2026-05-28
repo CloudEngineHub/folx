@@ -95,20 +95,20 @@ def elementwise_jhj_trace(fn: ForwardFn, args: FwdLaplArgs):
 
     Avoids find_out_idx (the output mask equals the input mask for elementwise),
     the per-output vmap stacking in vmapped_jac_hessian_jac, and the nested
-    JVP-of-VJP inside JHJ_via_trace.
+    JVP-of-VJP inside JHJ_via_trace. f''(x) is computed via forward-mode JVP
+    of JVP (cheaper than VJP-of-JVP for scalar elementwise functions: avoids
+    materializing a reverse-mode cotangent intermediate).
     """
     x = args.x[0]
     J = args.arrays[0].jacobian.data
     ones = jnp.ones_like(x)
 
-    def grad_fn(x):
-        _, vjp_fn = jax.vjp(fn, x)
-        # Caller guarantees fn is scalar-elementwise (out.shape == x.shape),
-        # so cotangents shaped like x are well-defined.
-        return vjp_fn(ones)[0]
+    def df(x):
+        # f'(x) via forward-mode JVP at tangent=ones; for scalar-elementwise
+        # f, jvp returns f'(x) * 1 = f'(x).
+        return jax.jvp(fn, (x,), (ones,))[1]
 
-    _, second_grad = jax.jvp(grad_fn, (x,), (ones,))
-
+    _, second_grad = jax.jvp(df, (x,), (ones,))
     return second_grad * (J * J).sum(axis=JAC_DIM)
 
 
@@ -394,20 +394,20 @@ def vmapped_jac_hessian_jac(
     out = merged_fn(*lapl_args.x)
     unravel = jfu.ravel_pytree(out)[1]
 
-    # Fast path: scalar-to-scalar elementwise nonlinear ops (silu, tanh, exp, ...)
-    # on SPARSE Jacobians. The Hessian is diagonal so tr(J^T H J) =
-    # f''(x) * (J*J).sum(JAC_DIM); we can skip find_out_idx (output mask == input
-    # mask) and the per-element vmap stack. Skipped for dense Jacobians: the
-    # summation reorder vs JHJ_via_trace drifts float32 results past pallas/MHSA
-    # test tolerances even though it's mathematically equivalent. Bail also if
-    # the sparse mask has duplicates -- sum_l J_full[l, i]^2 = sum_k J[k, i]^2
-    # only holds when each output position's x0_idx values are unique.
+    # Fast path: scalar-to-scalar elementwise nonlinear ops (silu, tanh, exp, ...).
+    # The Hessian is diagonal so tr(J^T H J) = f''(x) * (J*J).sum(JAC_DIM); this
+    # holds for both sparse and dense Jacobian storage (the sum runs over the
+    # sparse-row axis or the dense-input axis respectively, both equal to the
+    # sum of squares of |∇y[i]|). Skips find_out_idx, the per-element vmap stack,
+    # and the full Hessian materialization that JHJ_via_hessian would otherwise
+    # do for inp_dim > jac_dim. Bail if a sparse mask has duplicates --
+    # sum_l J_full[l, i]^2 = sum_k J[k, i]^2 requires unique x0_idx values per
+    # output position.
     if (
         custom_jac_hessian_jac is None
         and int(flags) == int(FunctionFlags.GENERAL)
         and len(lapl_args.arrays) == 1
         and isinstance(out, Array)
-        and lapl_args.arrays[0].jacobian.weak
         and not _has_duplicate_x0_idx(lapl_args.arrays[0].jacobian.x0_idx)
     ):
         x0 = lapl_args.x[0]
