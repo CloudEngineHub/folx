@@ -366,19 +366,24 @@ def test_forward_laplacian(
     assert jnp.allclose(
         folx_out.jacobian.dense_array, ref_out.jacobian.dense_array, atol=1e-6
     )
-    assert jnp.allclose(folx_out.laplacian, ref_out.laplacian, rtol=2e-3)
+    # The laplacian is a float32 computation compared against a higher-precision
+    # reference, so we need both tolerances: rtol covers the large-magnitude
+    # entries (abs diffs reach ~4e-5 on O(100) values) while atol covers the
+    # near-zero entries, where a pure relative tolerance is meaningless
+    # (float32 rounding of ~1e-6 trivially exceeds rtol * |~0|).
+    assert jnp.allclose(folx_out.laplacian, ref_out.laplacian, rtol=2e-3, atol=5e-5)
 
     assert jnp.allclose(folx_out.x, out.x, atol=1e-6)
     assert jnp.allclose(
         folx_out.jacobian.dense_array, out.jacobian.dense_array, atol=1e-6
     )
-    assert jnp.allclose(folx_out.laplacian, out.laplacian, rtol=2e-3)
+    assert jnp.allclose(folx_out.laplacian, out.laplacian, rtol=2e-3, atol=5e-5)
 
     assert jnp.allclose(ref_out.x, out.x, atol=1e-6)
     assert jnp.allclose(
         ref_out.jacobian.dense_array, out.jacobian.dense_array, atol=1e-6
     )
-    assert jnp.allclose(ref_out.laplacian, out.laplacian, rtol=2e-3)
+    assert jnp.allclose(ref_out.laplacian, out.laplacian, rtol=2e-3, atol=5e-5)
 
 
 @pytest.mark.parametrize(
@@ -435,16 +440,20 @@ def test_mhsea_forward_laplacian(
     assert jnp.allclose(
         folx_out.jacobian.dense_array, ref_out.jacobian.dense_array, atol=1e-6
     )
-    assert jnp.allclose(folx_out.laplacian, ref_out.laplacian, rtol=2e-3)
+    # See test_forward_laplacian: float32 laplacian vs reference needs both
+    # tolerances. The edge-bias variant accumulates more terms, so abs diffs run
+    # a bit larger (~2e-4 on O(100) entries); atol still guards the near-zero
+    # entries that a pure rtol would reject.
+    assert jnp.allclose(folx_out.laplacian, ref_out.laplacian, rtol=2e-3, atol=1e-4)
 
     assert jnp.allclose(folx_out.x, out.x, atol=1e-6)
     assert jnp.allclose(
         folx_out.jacobian.dense_array, out.jacobian.dense_array, atol=1e-6
     )
-    assert jnp.allclose(folx_out.laplacian, out.laplacian, rtol=2e-3)
+    assert jnp.allclose(folx_out.laplacian, out.laplacian, rtol=2e-3, atol=1e-4)
 
     assert jnp.allclose(ref_out.x, out.x, atol=1e-6)
     assert jnp.allclose(
         ref_out.jacobian.dense_array, out.jacobian.dense_array, atol=1e-6
     )
-    assert jnp.allclose(ref_out.laplacian, out.laplacian, rtol=2e-3)
+    assert jnp.allclose(ref_out.laplacian, out.laplacian, rtol=2e-3, atol=1e-4)
